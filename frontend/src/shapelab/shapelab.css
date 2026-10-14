@@ -1,0 +1,118 @@
+/* shape-param-lab の画面。埋め込み先と衝突しないよう、すべて .sl-root の中・sl- 接頭辞で書く */
+.sl-root {
+  --sl-bg: #f4f6f9; --sl-panel: #ffffff; --sl-line: #dfe4ea; --sl-text: #1f2933; --sl-sub: #66727f;
+  --sl-accent: #2f7de1; --sl-up: #c2410c; --sl-down: #1c7c54; --sl-err: #c92a2a; --sl-hover: #f0f5fc;
+  display: grid; grid-template-columns: 340px 1fr 360px; height: 100%; min-height: 0;
+  background: var(--sl-bg); color: var(--sl-text);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+}
+.sl-root * { box-sizing: border-box; }
+.sl-root h1 { font-size: 22px; margin: 0 0 8px; }
+.sl-root h2 { font-size: 13px; margin: 0 0 8px; color: var(--sl-sub); font-weight: 600; letter-spacing: .02em; }
+.sl-root h3 { font-size: 13px; margin: 14px 0 6px; }
+.sl-root input, .sl-root select { font: inherit; color: inherit; border: 1px solid var(--sl-line); border-radius: 6px; padding: 4px 6px; background: #fff; min-width: 0; }
+.sl-root input[type=checkbox] { padding: 0; margin: 0 4px 0 0; }
+.sl-root input[type=range] { padding: 0; border: 0; accent-color: var(--sl-accent); }
+.sl-root code { font-size: 11px; background: #eef1f5; padding: 1px 4px; border-radius: 4px; word-break: break-all; }
+
+.sl-left, .sl-right { background: var(--sl-panel); overflow-y: auto; min-height: 0; }
+.sl-left { border-right: 1px solid var(--sl-line); }
+.sl-right { border-left: 1px solid var(--sl-line); }
+.sl-left section, .sl-right section { padding: 12px 14px; border-bottom: 1px solid var(--sl-line); }
+.sl-center { position: relative; min-width: 0; min-height: 0; }
+.sl-viewer { position: absolute; inset: 0; }
+.sl-viewer canvas { display: block; }
+
+.sl-row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.sl-row > label:first-child { flex: 0 0 64px; color: var(--sl-sub); }
+.sl-row > select, .sl-row > input:not([type=checkbox]) { flex: 1; }
+.sl-row-top { align-items: flex-start; }
+.sl-l2 { color: var(--sl-sub); white-space: nowrap; }
+.sl-col { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.sl-btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.sl-btn { font: inherit; border: 1px solid var(--sl-line); background: #fff; border-radius: 6px; padding: 5px 10px; cursor: pointer; color: var(--sl-text); }
+.sl-btn:hover:not(:disabled) { background: var(--sl-hover); border-color: #b9c6d6; }
+.sl-btn:disabled { opacity: .5; cursor: default; }
+.sl-btn-s { padding: 2px 8px; font-size: 12px; }
+.sl-btn.sl-on { background: #fff4d6; border-color: #e0b400; }
+.sl-primary { background: var(--sl-accent); border-color: var(--sl-accent); color: #fff; }
+.sl-primary:hover:not(:disabled) { background: #2468c0; }
+.sl-link { font: inherit; font-size: 12px; background: none; border: 0; color: var(--sl-accent); cursor: pointer; padding: 0 4px; text-decoration: none; }
+.sl-link:disabled { color: #aab; cursor: default; }
+.sl-icon { background: none; border: 0; color: #8a96a3; cursor: pointer; padding: 0 4px; font-size: 12px; }
+.sl-icon:hover { color: var(--sl-err); }
+.sl-mini { display: inline-flex; align-items: center; gap: 4px; color: var(--sl-sub); font-size: 12px; white-space: nowrap; }
+.sl-sub { color: var(--sl-sub); font-size: 12px; }
+.sl-unit { color: var(--sl-sub); font-size: 12px; }
+.sl-hint { color: var(--sl-sub); font-size: 12px; margin: 6px 0; }
+.sl-err { color: var(--sl-err); font-size: 12px; margin: 4px 0; background: #fff0f0; border-radius: 6px; padding: 4px 8px; }
+.sl-err-s { color: var(--sl-err); font-size: 11px; }
+.sl-up { color: var(--sl-up); font-weight: 600; }
+.sl-down { color: var(--sl-down); font-weight: 600; }
+.sl-foot { padding: 8px 14px; color: var(--sl-sub); font-size: 11px; }
+
+/* パラメータカード */
+.sl-card { border: 1px solid var(--sl-line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: #fff; cursor: pointer; }
+.sl-card:hover { border-color: #b9c6d6; }
+.sl-card-active { border-color: var(--sl-accent); box-shadow: 0 0 0 2px #2f7de122; cursor: default; }
+.sl-card-off { opacity: .55; }
+.sl-card-head { display: flex; align-items: center; gap: 6px; }
+.sl-swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+.sl-name { flex: 1; border-color: transparent !important; font-weight: 600; padding: 2px 4px !important; }
+.sl-name:hover, .sl-name:focus { border-color: var(--sl-line) !important; }
+.sl-slider { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.sl-slider input[type=range] { flex: 1; min-width: 60px; }
+.sl-num { width: 72px; text-align: right; }
+.sl-detail { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--sl-line); }
+.sl-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+.sl-chip { display: inline-flex; align-items: center; gap: 2px; border: 1px solid; border-radius: 12px; padding: 1px 2px 1px 8px; font-size: 11px; background: #fafbfc; }
+.sl-coef { width: 44px; padding: 0 2px !important; font-size: 11px; }
+.sl-range { display: flex; align-items: center; gap: 4px; flex: 1; }
+.sl-range input { width: 64px; }
+
+/* 3D 上の表示 */
+.sl-hud { position: absolute; left: 10px; top: 10px; right: 10px; pointer-events: none; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.sl-hud > * { pointer-events: auto; }
+.sl-hud-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: #ffffffe6; border: 1px solid var(--sl-line); border-radius: 8px; padding: 4px 10px; }
+.sl-badge { font-size: 11px; border-radius: 10px; padding: 1px 8px; background: #e7f5ee; color: #1c7c54; cursor: help; }
+.sl-badge.boolean { background: #fff4e0; color: #a35a00; }
+.sl-badge.none { background: #eef1f5; color: var(--sl-sub); }
+.sl-spin { color: var(--sl-accent); font-size: 12px; }
+.sl-pick { background: #fff4d6; border: 1px solid #e0b400; border-radius: 8px; padding: 4px 10px; font-size: 12px; }
+.sl-tip { position: absolute; right: 10px; bottom: 10px; background: #1f2933dd; color: #fff; border-radius: 6px; padding: 3px 8px; font-size: 12px; pointer-events: none; }
+.sl-toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); background: #1f2933ee; color: #fff; border-radius: 8px; padding: 6px 14px; font-size: 12px; max-width: 80%; }
+.sl-empty { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 40px; background: var(--sl-bg); }
+.sl-empty p { max-width: 520px; color: var(--sl-sub); }
+
+/* 面情報 */
+.sl-face { display: flex; flex-direction: column; gap: 2px; }
+
+/* 実験計画 */
+.sl-doe h3:first-child { margin-top: 0; }
+.sl-scatter { width: 100%; height: auto; margin: 6px 0; font-size: 10px; fill: var(--sl-sub); }
+.sl-sc-bg { fill: #f7f9fb; stroke: var(--sl-line); }
+.sl-sc-tick { font-size: 9px; }
+.sl-table-wrap { max-height: 220px; overflow: auto; border: 1px solid var(--sl-line); border-radius: 6px; }
+.sl-table { border-collapse: collapse; width: 100%; font-size: 11px; font-variant-numeric: tabular-nums; }
+.sl-table th, .sl-table td { padding: 2px 6px; text-align: right; border-bottom: 1px solid #eef1f5; white-space: nowrap; }
+.sl-table th { position: sticky; top: 0; background: #f7f9fb; font-weight: 600; }
+.sl-table tbody tr { cursor: pointer; }
+.sl-table tbody tr:hover { background: var(--sl-hover); }
+.sl-table tr.sel { background: #fff4d6; }
+.sl-range-list { list-style: none; padding: 0; margin: 6px 0; font-size: 12px; }
+.sl-range-list li { padding: 2px 0; }
+.sl-range-list li.ok { color: #1c7c54; }
+.sl-range-list li.ng { color: var(--sl-err); }
+.sl-job { margin: 6px 0; }
+.sl-bar { height: 8px; border-radius: 4px; background: #eef1f5; overflow: hidden; }
+.sl-bar > div { height: 100%; background: var(--sl-accent); transition: width .3s; }
+.sl-path { font-size: 12px; margin-top: 4px; }
+.sl-outputs { list-style: none; padding: 0; margin: 0; font-size: 12px; }
+.sl-outputs li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.sl-outputs li > span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 1100px) {
+  .sl-root { grid-template-columns: 1fr; grid-template-rows: auto 60vh auto; height: auto; }
+  .sl-left, .sl-right { border: 0; }
+  .sl-center { min-height: 60vh; }
+}

@@ -1,0 +1,11 @@
+node_modules/
+frontend/dist/
+backend/.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+data/outputs/
+data/models/*
+!data/models/.gitkeep
+data/projects/*
+!data/projects/.gitkeep

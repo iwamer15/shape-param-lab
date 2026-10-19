@@ -32,7 +32,8 @@ export function newParam(kind: Kind, faces: FaceInfo[], face: number | null, exi
   const f = faces[face]
   if (kind === 'diameter' && f.radius) {
     const d = 2 * f.radius
-    Object.assign(p, { min: roundTo(d * 0.8, 0.5), max: roundTo(d * 1.2, 0.5), name: f.convex ? `ボス外径 #${face}` : `穴径 #${face}` })
+    const what = f.kind_code === 2 ? (f.convex ? '勾配付きボスの根元径' : '勾配付き穴の入口径') : f.convex ? 'ボス外径' : '穴径'
+    Object.assign(p, { min: roundTo(d * 0.8, 0.5), max: roundTo(d * 1.2, 0.5), name: `${what} #${face}` })
   } else if (kind === 'distance') {
     const c = parallelPlanes(faces, face)
     if (c.length) {

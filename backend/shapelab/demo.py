@@ -13,7 +13,7 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 
-from .cad import all_face_info, write_step
+from .cad import all_face_info, tessellate, write_stl, write_step
 
 DEMO_NAME = "demo_casting.step"
 
@@ -38,10 +38,56 @@ def make_demo_shape():
     return u.Shape()
 
 
+def make_fillet_demo_shape():
+    """デモ形状に、抜き勾配付きボス（円錐）と、ボス・リブの付け根の R1.5 フィレットを足した形（実物に近い確認用）。"""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.BRepGProp import BRepGProp
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    s = make_demo_shape()
+    cone = BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(80, 80, 12), gp_Dir(0, 0, 1)), 9, 7, 16).Shape()
+    u = ShapeUpgrade_UnifySameDomain(BRepAlgoAPI_Fuse(s, cone).Shape(), True, True, True)
+    u.Build()
+    s = u.Shape()
+    mf = BRepFilletAPI_MakeFillet(s)
+    e = TopExp_Explorer(s, TopAbs_EDGE)
+    to_edge = getattr(TopoDS, "Edge", None) or TopoDS.Edge_s
+    while e.More():
+        g = GProp_GProps()
+        BRepGProp.LinearProperties_s(e.Current(), g)
+        c = g.CentreOfMass()
+        # 板の上面（z=12）にある辺のうち、外周と角窓以外 ＝ ボス・リブの付け根
+        if 11.9 < c.Z() < 12.1 and not (65 <= c.X() <= 95 and 12 <= c.Y() <= 26) \
+                and 0.5 < c.X() < 159.5 and 0.5 < c.Y() < 99.5:
+            mf.Add(1.5, to_edge(e.Current()))
+        e.Next()
+    mf.Build()
+    return mf.Shape()
+
+
 def write_demo(models_dir: Path) -> Path:
     models_dir.mkdir(parents=True, exist_ok=True)
     path = models_dir / DEMO_NAME
     write_step(make_demo_shape(), path)
+    return path
+
+
+def write_fillet_demo_stl(models_dir: Path) -> Path:
+    models_dir.mkdir(parents=True, exist_ok=True)
+    path = models_dir / "demo_fillet.stl"
+    write_stl(tessellate(make_fillet_demo_shape(), 0.02, angle=0.15), path)
+    return path
+
+
+def write_demo_stl(models_dir: Path) -> Path:
+    """同じデモ形状を STL（三角形メッシュ）で。メッシュ変形の確認用。"""
+    models_dir.mkdir(parents=True, exist_ok=True)
+    path = models_dir / "demo_casting.stl"
+    write_stl(tessellate(make_demo_shape(), 0.05, angle=0.2), path)
     return path
 
 
@@ -52,17 +98,17 @@ def _find(infos, pred):
     return hit[0]
 
 
-def demo_params(shape) -> list[dict]:
-    """デモ形状に合わせたパラメータ定義（面番号は形状から探す）。"""
-    infos = all_face_info(shape)
+def demo_params(shape_or_infos) -> list[dict]:
+    """デモ形状に合わせたパラメータ定義（面番号は形状から探す）。CAD の形状か、面の一覧（STL 等）を渡す。"""
+    infos = shape_or_infos if isinstance(shape_or_infos, list) else all_face_info(shape_or_infos)
     c = lambda f: np.array(f.center)
     nz = lambda f: f.kind_code == 0 and abs(f.normal[2]) > 0.99
     top = _find(infos, lambda f: nz(f) and f.normal[2] > 0 and abs(c(f)[2] - 12) < 1e-3)
     bottom = _find(infos, lambda f: nz(f) and f.normal[2] < 0 and abs(c(f)[2]) < 1e-3)
     boss_a_top = _find(infos, lambda f: nz(f) and abs(c(f)[2] - 37) < 1e-3)
     boss_b_top = _find(infos, lambda f: nz(f) and abs(c(f)[2] - 30) < 1e-3)
-    boss_a_side = _find(infos, lambda f: f.kind_code == 1 and f.convex and abs(f.radius - 14) < 1e-3)
-    hole = _find(infos, lambda f: f.kind_code == 1 and not f.convex and abs(f.radius - 6) < 1e-3)
+    boss_a_side = _find(infos, lambda f: f.kind_code == 1 and f.convex and f.fillet_r is None and abs(f.radius - 14) < 0.1)
+    hole = _find(infos, lambda f: f.kind_code == 1 and not f.convex and f.fillet_r is None and abs(f.radius - 6) < 0.1)
     rib_top = _find(infos, lambda f: nz(f) and abs(c(f)[2] - 26) < 1e-3)
     rib_y0 = _find(infos, lambda f: f.kind_code == 0 and f.normal[1] < -0.99 and abs(c(f)[1] - 47) < 1e-3)
     rib_y1 = _find(infos, lambda f: f.kind_code == 0 and f.normal[1] > 0.99 and abs(c(f)[1] - 53) < 1e-3)

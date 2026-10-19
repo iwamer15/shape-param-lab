@@ -1,8 +1,12 @@
 // 実験計画（どの寸法の組み合わせで作るか）・範囲チェック・一括生成
 import { useEffect, useRef, useState } from 'react'
 import type { ShapeApi } from './api'
-import type { DoeSettings, GenRow, Job, Param, Project, RangeResult } from './types'
+import type { DoeSettings, GenRow, Job, Param, Project } from './types'
 import { PALETTE, fmt, stamp } from './util'
+
+const FORMAT_HINT: Record<string, string> = {
+  stl: '表面の三角形（学習・ボクセル化用）', step: 'CAD 形状（CAE にそのまま渡す用）', inp: '節点座標だけ書き換えた解析メッシュ（要素・セット・材料はそのまま）',
+}
 
 interface Props {
   api: ShapeApi
@@ -11,22 +15,23 @@ interface Props {
   doe: DoeSettings
   methods: Record<string, string>
   morphMethod: string
+  seg: number
+  formatsAvail: string[]
   hasErrors: boolean
   onDoe: (d: DoeSettings) => void
   onPreview: (values: Record<string, number>) => void
   project: () => Project
 }
 
-export function DoePanel({ api, model, params, doe, methods, morphMethod, hasErrors, onDoe, onPreview, project }: Props) {
+export function DoePanel({ api, model, params, doe, methods, morphMethod, seg, formatsAvail, hasErrors, onDoe, onPreview, project }: Props) {
   const active = params.filter(p => p.enabled !== false)
   const [rows, setRows] = useState<Record<string, number>[]>([])
   const [sel, setSel] = useState<number | null>(null)
   const [axes, setAxes] = useState<[string, string]>(['', ''])
-  const [range, setRange] = useState<RangeResult[] | null>(null)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState('')
   const [outName, setOutName] = useState('')
-  const [formats, setFormats] = useState({ stl: true, step: true })
+  const [formats, setFormats] = useState<Record<string, boolean>>({ stl: true, step: true, inp: true })
   const [overwrite, setOverwrite] = useState(false)
   const [job, setJob] = useState<Job | null>(null)
   const [jobRows, setJobRows] = useState<GenRow[]>([])
@@ -45,18 +50,13 @@ export function DoePanel({ api, model, params, doe, methods, morphMethod, hasErr
 
   const plan = async () => {
     setErr(''); setBusy('plan')
-    try { setRows(await api.doe(model, params, doe)); setSel(null) } catch (e) { setErr(String((e as Error).message)) }
-    setBusy('')
-  }
-  const check = async () => {
-    setErr(''); setBusy('range'); setRange(null)
-    try { setRange(await api.rangeCheck(model, params, morphMethod)) } catch (e) { setErr(String((e as Error).message)) }
+    try { setRows(await api.doe(model, params, doe, seg)); setSel(null) } catch (e) { setErr(String((e as Error).message)) }
     setBusy('')
   }
   const start = async () => {
     setErr(''); setJobRows([])
     try {
-      const fm = Object.entries(formats).filter(([, v]) => v).map(([k]) => k)
+      const fm = formatsAvail.filter(k => formats[k] !== false)
       const r = await api.generate({ project: project(), out_name: outName, formats: fm, method: morphMethod, overwrite,
         samples: rows.length ? rows : undefined })
       setJobPath(r.path)
@@ -78,54 +78,55 @@ export function DoePanel({ api, model, params, doe, methods, morphMethod, hasErr
   const running = job?.status === 'running'
   const total = doe.method === 'grid' ? Math.pow(Math.max(2, doe.levels), active.length) : null
 
+  const [adv, setAdv] = useState(false)
+  const suggestN = Math.max(10, active.length * 10)
+
   return (
-    <div className="sl-doe">
-      <h3>① 実験計画（作る形状の組み合わせ）</h3>
-      <div className="sl-row">
-        <label>方法</label>
-        <select value={doe.method} onChange={e => onDoe({ ...doe, method: e.target.value })}>
-          {Object.entries(methods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-        </select>
+    <div className="sl-doe sl-stepbody">
+      <h2>④ いろいろな組み合わせの形状を作ります</h2>
+      <div className="sl-row sl-big">
+        <label>作る数</label>
+        <input type="number" min={1} max={2000} value={doe.n} disabled={doe.method === 'grid' || doe.method === 'oat'}
+          onChange={e => onDoe({ ...doe, n: parseInt(e.target.value) || 1 })} />
+        <span className="sl-sub">形状（目安: 寸法の数 × 10 = {suggestN} 以上）</span>
       </div>
-      {(doe.method === 'lhs' || doe.method === 'random') && (
-        <div className="sl-row">
-          <label>形状の数</label>
-          <input type="number" min={1} max={2000} value={doe.n} onChange={e => onDoe({ ...doe, n: parseInt(e.target.value) || 1 })} />
-          <label className="sl-l2">乱数の種</label>
-          <input type="number" value={doe.seed} onChange={e => onDoe({ ...doe, seed: parseInt(e.target.value) || 0 })} />
-        </div>
-      )}
-      {(doe.method === 'grid' || doe.method === 'oat') && (
-        <div className="sl-row">
-          <label>水準数</label>
-          <input type="number" min={2} max={11} value={doe.levels} onChange={e => onDoe({ ...doe, levels: parseInt(e.target.value) || 2 })} />
-          {total != null && <span className="sl-sub">→ {total} 通り</span>}
-        </div>
-      )}
-      <p className="sl-hint">
-        {doe.method === 'lhs' && 'ラテン超方格: 各寸法の範囲を形状数で等分し、どの区間も 1 回ずつ使う。少ない数で全体をまんべんなく試せるので、サロゲートの学習データ作りの標準。'}
-        {doe.method === 'random' && 'ランダム: 範囲内で一様に。偏りが出やすいので通常は LHS を推奨。'}
-        {doe.method === 'grid' && '格子: 各寸法を等間隔に振った全組み合わせ。寸法の数が多いと爆発的に増える。'}
-        {doe.method === 'oat' && '1因子ずつ: 他を元の値に固定し、1 つだけ振る。どの寸法が効くか（感度）を見る用。'}
-      </p>
+      <p className="sl-hint">範囲の中をまんべんなく試せるように、組み合わせを自動で選びます（ラテン超方格）。</p>
+      <div className="sl-adv">
+        <button className="sl-link" onClick={() => setAdv(!adv)}>{adv ? '▾' : '▸'} 組み合わせの選び方（詳細）</button>
+        {adv && (
+          <>
+            <div className="sl-row">
+              <label>方法</label>
+              <select value={doe.method} onChange={e => onDoe({ ...doe, method: e.target.value })}>
+                {Object.entries(methods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </div>
+            {(doe.method === 'lhs' || doe.method === 'random') && (
+              <div className="sl-row">
+                <label>乱数の種</label>
+                <input type="number" value={doe.seed} onChange={e => onDoe({ ...doe, seed: parseInt(e.target.value) || 0 })} />
+              </div>
+            )}
+            {(doe.method === 'grid' || doe.method === 'oat') && (
+              <div className="sl-row">
+                <label>水準数</label>
+                <input type="number" min={2} max={11} value={doe.levels} onChange={e => onDoe({ ...doe, levels: parseInt(e.target.value) || 2 })} />
+                {total != null && <span className="sl-sub">→ {total} 通り</span>}
+              </div>
+            )}
+            <p className="sl-hint">
+              {doe.method === 'lhs' && 'ラテン超方格: 各寸法の範囲を作る数で等分し、どの区間も 1 回ずつ使う。少ない数で全体をまんべんなく試せる（おすすめ）。'}
+              {doe.method === 'random' && 'ランダム: 範囲内で一様に。偏りが出やすい。'}
+              {doe.method === 'grid' && '格子: 各寸法を等間隔に振った全組み合わせ。寸法が多いと数が爆発的に増える。'}
+              {doe.method === 'oat' && '1つずつ: 他を元の値に固定し、1 つだけ振る。どの寸法が効くか（感度）を見る用。'}
+            </p>
+          </>
+        )}
+      </div>
       <div className="sl-btns">
-        <button className="sl-btn" disabled={!active.length || hasErrors || !!busy} onClick={plan}>{busy === 'plan' ? '作成中…' : '計画を作る'}</button>
-        <button className="sl-btn" disabled={!active.length || hasErrors || !!busy} onClick={check}
-          title="各寸法を最小・最大にしたときに形が作れるかを先に確認">{busy === 'range' ? '確認中…' : '範囲チェック'}</button>
+        <button className="sl-btn" disabled={!active.length || hasErrors || !!busy} onClick={plan}>{busy === 'plan' ? '作成中…' : '組み合わせを先に見る'}</button>
       </div>
       {err && <div className="sl-err">⚠ {err}</div>}
-
-      {range && (
-        <ul className="sl-range-list">
-          {range.map((r, i) => (
-            <li key={i} className={r.ok ? 'ok' : 'ng'}>
-              {r.ok ? '✓' : '✗'} {r.label}
-              {r.ok ? <span className="sl-sub"> {r.method === 'boolean' ? '近似' : '精密'} / 体積 {fmt((r.volume ?? 0) / 1000, 1)} cm³</span>
-                : <div className="sl-err-s">{r.error}</div>}
-            </li>
-          ))}
-        </ul>
-      )}
 
       {rows.length > 0 && (
         <>
@@ -150,21 +151,24 @@ export function DoePanel({ api, model, params, doe, methods, morphMethod, hasErr
               </tbody>
             </table>
           </div>
-          <p className="sl-hint">行・点をクリックすると、その寸法の形状を 3D で確認できます。</p>
+          <p className="sl-hint">点や行をクリックすると、その組み合わせの形を 3D で確認できます。</p>
         </>
       )}
 
-      <h3>② 一括生成</h3>
-      <div className="sl-row"><label>出力名</label><input value={outName} onChange={e => setOutName(e.target.value)} /></div>
+      <h3>保存</h3>
+      <div className="sl-row"><label>フォルダ名</label><input value={outName} onChange={e => setOutName(e.target.value)} /></div>
       <div className="sl-row">
         <label>形式</label>
-        <label className="sl-mini"><input type="checkbox" checked={formats.stl} onChange={e => setFormats({ ...formats, stl: e.target.checked })} />STL</label>
-        <label className="sl-mini"><input type="checkbox" checked={formats.step} onChange={e => setFormats({ ...formats, step: e.target.checked })} />STEP</label>
+        {formatsAvail.map(k => (
+          <label key={k} className="sl-mini" title={FORMAT_HINT[k]}>
+            <input type="checkbox" checked={formats[k] !== false} onChange={e => setFormats({ ...formats, [k]: e.target.checked })} />{k.toUpperCase()}
+          </label>
+        ))}
         <label className="sl-mini"><input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} />上書き</label>
       </div>
       <div className="sl-btns">
         <button className="sl-btn sl-primary" disabled={!active.length || hasErrors || running || !outName}
-          onClick={start}>{rows.length ? `計画の ${rows.length} 形状を生成` : '生成（計画は自動作成）'}</button>
+          onClick={start}>{rows.length ? `この ${rows.length} 形状を作る` : `${doe.n} 形状を作る`}</button>
         {running && <button className="sl-btn" onClick={() => job && api.cancel(job.id)}>中止</button>}
       </div>
       {job && (
@@ -181,7 +185,7 @@ export function DoePanel({ api, model, params, doe, methods, morphMethod, hasErr
 
       {outputs.length > 0 && (
         <>
-          <h3>生成済み</h3>
+          <h3>作った形状</h3>
           <ul className="sl-outputs">
             {outputs.map(o => (
               <li key={o.name}>

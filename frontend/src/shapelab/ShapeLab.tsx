@@ -1,15 +1,20 @@
 // 形状パラメータ・ラボ（画面全体）。他のアプリには <ShapeLab apiBase="/api/shape" /> で埋め込める。
+// 画面: 上に手順（① 読み込む → ② 変えたい所を選ぶ → ③ 範囲 → ④ 作る）、左に 3D、右に今の手順の内容。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './shapelab.css'
 import { ShapeApi, type MorphInfo } from './api'
+import { buildDims } from './dims'
 import { DoePanel } from './DoePanel'
+import { FacePopup } from './FacePopup'
 import { ParamCard } from './ParamCard'
-import type { CheckResult, DoeSettings, Kind, MeshData, ModelInfo, Param, Project } from './types'
+import { LoadStep, RangeStep, type Step, StepBar } from './Steps'
+import { suggestionsFor } from './suggest'
+import type { CheckResult, DoeSettings, MeshData, ModelInfo, Param, Project } from './types'
 import { PALETTE, fmt, newParam } from './util'
 import { Viewer } from './Viewer'
 
 const DEFAULT_DOE: DoeSettings = { method: 'lhs', n: 20, seed: 0, levels: 3 }
-const METHOD_LABEL: Record<string, string> = { none: '変形なし', offset: '精密（面オフセット）', boolean: '近似（押し出し/削り）' }
+const METHOD_LABEL: Record<string, string> = { none: '変形なし', offset: '精密（面オフセット）', boolean: '近似（押し出し/削り）', morph: 'メッシュ変形' }
 
 export function ShapeLab({ apiBase = '/api/shape' }: { apiBase?: string }) {
   const api = useMemo(() => new ShapeApi(apiBase), [apiBase])
@@ -30,15 +35,18 @@ export function ShapeLab({ apiBase = '/api/shape' }: { apiBase?: string }) {
   const [active, setActive] = useState<string | null>(null)
   const [pickMode, setPickMode] = useState<'faces' | 'ref' | null>(null)
   const [hover, setHover] = useState<number | null>(null)
-  const [selFace, setSelFace] = useState<number | null>(null)
+  const [popup, setPopup] = useState<{ face: number; at: { x: number; y: number } } | null>(null)
   const [ghost, setGhost] = useState(true)
   const [method, setMethod] = useState('auto')
   const [projName, setProjName] = useState('')
+  const [seg, setSeg] = useState(30)
+  const [step, setStep] = useState<Step>(1)
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState('')
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [adv, setAdv] = useState(false)
+  const centerRef = useRef<HTMLElement>(null)
 
-  const flash = (m: string) => { setMsg(m); window.setTimeout(() => setMsg(x => (x === m ? '' : x)), 4000) }
+  const flash = (m: string) => { setMsg(m); window.setTimeout(() => setMsg(x => (x === m ? '' : x)), 4500) }
   const refreshLists = useCallback(() => {
     api.models().then(setModels).catch(e => flash(String(e.message)))
     api.projects().then(setProjects).catch(() => {})
@@ -46,54 +54,72 @@ export function ShapeLab({ apiBase = '/api/shape' }: { apiBase?: string }) {
 
   useEffect(() => { api.meta().then(setMeta).catch(e => flash(`サーバに接続できません: ${e.message}`)); refreshLists() }, [api, refreshLists])
 
-  const openModel = useCallback(async (name: string, pj?: Project) => {
-    setLoading('モデルを読み込み中…'); setMorphErr('')
+  const openModel = useCallback(async (name: string, pj?: Project, segAngle?: number) => {
+    const sa = segAngle ?? pj?.seg_angle ?? 30
+    setLoading(/\.(stl|inp)$/i.test(name) ? '形状を読み込み、面を見分けています…（大きいメッシュは数十秒）' : '形状を読み込んでいます…')
+    setMorphErr('')
     try {
-      const [inf, bm] = await Promise.all([api.info(name), api.baseMesh(name)])
-      setModel(name); setInfo(inf); setBaseMesh(bm.mesh); setMesh(bm.mesh); setMorph(null)
-      setParams(pj?.params ?? []); setDoe(pj?.doe ?? DEFAULT_DOE); setValues({}); setActive(null); setPickMode(null); setSelFace(null)
-    } catch (e) { flash(String((e as Error).message)) }
-    setLoading('')
+      const [inf, bm] = await Promise.all([api.info(name, sa), api.baseMesh(name, sa)])
+      setModel(name); setInfo(inf); setBaseMesh(bm.mesh); setMesh(bm.mesh); setMorph(null); setSeg(sa)
+      if (segAngle === undefined) { setParams(pj?.params ?? []); setDoe(pj?.doe ?? DEFAULT_DOE) }
+      setValues({}); setActive(null); setPickMode(null); setPopup(null)
+      setMethod(inf.methods[0] ?? 'auto')
+      if (inf.model.warnings.length) flash(inf.model.warnings.join(' / '))
+      return true
+    } catch (e) { flash(String((e as Error).message)); return false }
+    finally { setLoading('') }
   }, [api])
 
+  const resegment = async (angle: number) => {
+    if (params.length && !window.confirm('面の見分け方を変えると面の番号が変わり、作った寸法がずれることがあります。続けますか？')) return
+    await openModel(model, undefined, angle)
+  }
   const loadProject = async (name: string) => {
     try {
       const pj = await api.project(name)
       setProjName(name)
-      await openModel(pj.model, pj)
+      if (await openModel(pj.model, pj)) setStep(2)
     } catch (e) { flash(String((e as Error).message)) }
   }
-  const demo = async () => {
-    setLoading('デモ形状を作成中…')
+  const demo = async (kind: 'step' | 'stl' | 'fillet' = 'step') => {
+    setLoading(kind === 'fillet' ? 'デモ形状を作り、面を見分けています…（20 秒ほど）' : 'デモ形状を作っています…')
     try {
-      const r = await api.demo()
+      const r = await api.demo(kind)
       refreshLists(); setProjName(r.project)
-      await openModel(r.name, r.data)
-      flash('デモ形状（板＋ボス2個＋穴＋リブ＋窓）と寸法 7 個を読み込みました')
-    } catch (e) { flash(String((e as Error).message)) }
-    setLoading('')
+      if (await openModel(r.name, r.data)) {
+        setStep(2)
+        flash('デモ形状と、寸法の例を読み込みました。矢印の先の ● をドラッグすると形が変わります')
+      }
+    } catch (e) { flash(String((e as Error).message)); setLoading('') }
   }
   const upload = async (f: File) => {
-    setLoading(`${f.name} を読み込み中…`)
-    try { const r = await api.upload(f); refreshLists(); setProjName(''); await openModel(r.name) } catch (e) { flash(String((e as Error).message)) }
-    setLoading('')
+    setLoading(`${f.name} を送っています…`)
+    try {
+      const r = await api.upload(f)
+      refreshLists(); setProjName('')
+      if (await openModel(r.name)) { setStep(2); flash('読み込みました。変えたい面をクリックしてください') }
+    } catch (e) { flash(String((e as Error).message)); setLoading('') }
   }
-  const project = useCallback((): Project => ({ version: 1, model, params, doe }), [model, params, doe])
+  const isMesh = info?.model.type === 'mesh'
+  const project = useCallback((): Project => ({
+    version: 1, model, params, doe: { ...doe, constraints: (doe.constraints ?? []).map(c => c.trim()).filter(Boolean) },
+    ...(isMesh ? { seg_angle: seg } : {}),
+  }), [model, params, doe, isMesh, seg])
   const save = async () => {
     const name = projName.trim() || model.replace(/\.[^.]+$/, '')
-    try { await api.saveProject(name, project()); setProjName(name); refreshLists(); flash(`保存しました: ${name}`) } catch (e) { flash(String((e as Error).message)) }
+    try { await api.saveProject(name, project()); setProjName(name); refreshLists(); flash(`設定を保存しました: ${name}`) } catch (e) { flash(String((e as Error).message)) }
   }
 
-  // パラメータの検証（元の値・エラー）
+  // 寸法の検証（元の値・エラー）
   useEffect(() => {
     if (!model) return
     const t = window.setTimeout(() => {
-      api.check(model, params).then(r => setChecks(Object.fromEntries(r.map(c => [c.id, c])))).catch(() => {})
-    }, 150)
+      api.check(model, params, seg).then(r => setChecks(Object.fromEntries(r.map(c => [c.id, c])))).catch(() => {})
+    }, 120)
     return () => window.clearTimeout(t)
-  }, [api, model, params])
+  }, [api, model, params, seg])
 
-  // 変形（スライダーを動かすたびに、少し待ってからサーバで計算）
+  // 変形（値が変わるたびに、少し待ってからサーバで計算）
   const abort = useRef<AbortController | null>(null)
   useEffect(() => {
     if (!model || !info) return
@@ -106,194 +132,188 @@ export function ShapeLab({ apiBase = '/api/shape' }: { apiBase?: string }) {
       abort.current = ac
       setComputing(true)
       try {
-        const r = await api.morph(model, ok, vals, method, ac.signal)
+        const r = await api.morph(model, ok, vals, method, seg, ac.signal)
         setMesh(r.mesh); setMorph(r.info); setMorphErr('')
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setMorphErr(String((e as Error).message))
       }
       if (abort.current === ac) setComputing(false)
-    }, 180)
+    }, 150)
     return () => window.clearTimeout(t)
-  }, [api, model, info, params, values, checks, method, baseMesh])
+  }, [api, model, info, params, values, checks, method, baseMesh, seg])
 
-  // 面の色: パラメータごとの色。基準面は薄く
-  const colors = useMemo(() => {
+  // 面の色: 寸法ごとの色。測る基準の面は薄く
+  const faceColors = useMemo(() => {
     const m = new Map<number, string>()
     params.forEach((p, i) => {
       const c = PALETTE[i % PALETTE.length]
-      if (p.ref_face != null && p.kind === 'distance' && (active === p.id || !active)) m.set(p.ref_face, c + '66')
+      if (p.ref_face != null && p.kind === 'distance' && (active === p.id || !active)) m.set(p.ref_face, mix(c, '#c3ccd6', 0.55))
       for (const f of p.faces) m.set(f.face, c)
     })
-    if (selFace != null && !m.has(selFace)) m.set(selFace, '#9aa7b6')
+    if (popup && !m.has(popup.face)) m.set(popup.face, '#ffd84a')
     return m
-  }, [params, active, selFace])
-  // three.js の Color は 8 桁 hex を読めないので、薄い色は混ぜて作る
-  const faceColors = useMemo(() => {
-    const out = new Map<number, string>()
-    colors.forEach((v, k) => out.set(k, v.length === 9 ? mix(v.slice(0, 7), '#c3ccd6', 0.55) : v))
-    return out
-  }, [colors])
+  }, [params, active, popup])
 
+  const dims = useMemo(() => (info ? buildDims(params, info.faces, checks, values) : []), [params, info, checks, values])
+
+  const setValue = (id: string, v: number | undefined) =>
+    setValues(vs => { const n = { ...vs }; if (v === undefined || isNaN(v)) delete n[id]; else n[id] = v; return n })
   const updateParam = (p: Param) => setParams(ps => ps.map(q => (q.id === p.id ? p : q)))
-  const addParam = (kind: Kind, face: number | null) => {
-    if (!info) return
-    const p = newParam(kind, info.faces, face, params)
-    setParams(ps => [...ps, p]); setActive(p.id); setPickMode(face == null ? 'faces' : null)
+  const addParam = (p: Param) => {
+    setParams(ps => [...ps, p]); setActive(p.id); setPopup(null)
+    if (step !== 2) setStep(2)
+    flash('寸法を作りました。右のスライダーか、3D の矢印の先の ● をドラッグして形を変えられます')
   }
-  const onPick = (face: number) => {
-    setSelFace(face)
+  const removeParam = (id: string) => {
+    setParams(ps => ps.filter(q => q.id !== id)); setValue(id, undefined)
+    if (active === id) setActive(null)
+  }
+  const onPick = (face: number, at: { x: number; y: number }) => {
     const p = params.find(q => q.id === active)
-    if (!p || !pickMode) return
-    if (pickMode === 'faces') {
-      const has = p.faces.some(f => f.face === face)
-      const next = { ...p, faces: has ? p.faces.filter(f => f.face !== face) : [...p.faces, { face, coef: 1 }] }
-      // 1 枚目を選んだときは種類に合わせて初期値（基準面・範囲・名前）を入れる
-      if (!has && p.faces.length === 0 && info) {
-        const d = newParam(p.kind, info.faces, face, params.filter(q => q.id !== p.id))
-        Object.assign(next, { ref_face: p.ref_face ?? d.ref_face, min: d.min, max: d.max, name: p.name || d.name })
+    if (p && pickMode && info) {        // 詳細設定から「面を足す」「基準の面を選ぶ」を押しているとき
+      if (pickMode === 'faces') {
+        const has = p.faces.some(f => f.face === face)
+        const next = { ...p, faces: has ? p.faces.filter(f => f.face !== face) : [...p.faces, { face, coef: 1 }] }
+        if (!has && p.faces.length === 0) {
+          const d = newParam(p.kind, info.faces, face, params.filter(q => q.id !== p.id))
+          Object.assign(next, { ref_face: p.ref_face ?? d.ref_face, min: d.min, max: d.max, name: p.name || d.name })
+        }
+        updateParam(next)
+      } else {
+        updateParam({ ...p, ref_face: face }); setPickMode('faces')
       }
-      updateParam(next)
-    } else {
-      updateParam({ ...p, ref_face: face }); setPickMode('faces')
+      return
     }
+    if (step === 1 || step === 3 || step === 4) setStep(2)
+    setPopup({ face, at })
   }
 
   const hasErrors = params.some(p => p.enabled !== false && checks[p.id]?.error)
-  const face = selFace != null ? info?.faces[selFace] : null
   const hoverInfo = hover != null ? info?.faces[hover] : null
   const dv = morph && info ? (morph.mass.volume / info.mass.volume - 1) * 100 : null
+  const suggestions = popup && info ? suggestionsFor(info.faces[popup.face], info.faces, params) : null
+  const box = centerRef.current ? { w: centerRef.current.clientWidth, h: centerRef.current.clientHeight } : { w: 800, h: 600 }
 
   return (
     <div className="sl-root">
-      <aside className="sl-left">
-        <section>
-          <h2>モデル</h2>
-          <div className="sl-row">
-            <select value={model} onChange={e => e.target.value && openModel(e.target.value)}>
-              <option value="">（CAD を選択）</option>
-              {models.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
-            </select>
+      <header className="sl-top">
+        <div className="sl-brand">形状パラメータ・ラボ</div>
+        <StepBar step={step} onStep={setStep}
+          enabled={n => n === 1 || (!!model && (n === 2 || params.length > 0))}
+          done={n => (n === 1 && !!model) || (n === 2 && params.length > 0)} />
+        {model && (
+          <div className="sl-save">
+            <input value={projName} placeholder="設定の名前" onChange={e => setProjName(e.target.value)} />
+            <button className="sl-btn" onClick={save} title="寸法と範囲の設定を保存して、あとで続きから使えるようにします">設定を保存</button>
           </div>
-          <div className="sl-btns">
-            <button className="sl-btn" onClick={() => fileRef.current?.click()}>CAD を開く（STEP / IGES）</button>
-            <button className="sl-btn" onClick={demo}>デモ形状</button>
-            <input ref={fileRef} type="file" hidden accept=".step,.stp,.iges,.igs,.brep,.brp"
-              onChange={e => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = '' }} />
-          </div>
-          <div className="sl-row">
-            <select value="" onChange={e => e.target.value && loadProject(e.target.value)}>
-              <option value="">保存したパラメータ定義を開く…</option>
-              {projects.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
-            </select>
-          </div>
-          {model && (
-            <div className="sl-row">
-              <input value={projName} placeholder="定義の名前" onChange={e => setProjName(e.target.value)} />
-              <button className="sl-btn" onClick={save}>保存</button>
+        )}
+      </header>
+
+      <div className="sl-body">
+        <main className="sl-center" ref={centerRef}>
+          <Viewer mesh={mesh} ghost={ghost && morph ? baseMesh : null} faceColors={faceColors} hoverFace={hover}
+            fitKey={model} onPick={onPick} onMiss={() => setPopup(null)} onHover={setHover}
+            dims={step === 1 ? [] : dims} activeDim={active}
+            onDimDrag={(id, v) => setValue(id, v)} onDimSelect={id => { setActive(id); setPopup(null) }} />
+          {!model && !loading && (
+            <div className="sl-empty">
+              <h1>形状パラメータ・ラボ</h1>
+              <p>形状（CAD・STL・INP）を読み込み、<b>変えたい所をクリック</b>して寸法を作り、
+                <b>矢印をドラッグ</b>して形を変えます。最後に、いろいろな寸法の形状をまとめて作れます（サロゲートの学習データ用）。</p>
+              <div className="sl-btns" style={{ justifyContent: 'center' }}>
+                <button className="sl-btn sl-primary" onClick={() => demo('step')}>デモで試す</button>
+              </div>
+              <p className="sl-sub">自分のファイルは、右の枠にドロップしてください。</p>
             </div>
           )}
-        </section>
-
-        {model && (
-          <section className="sl-params">
-            <h2>寸法パラメータ <span className="sl-sub">{params.length} 個</span></h2>
-            {params.length === 0 && <p className="sl-hint">3D で面をクリック → 右の「選択中の面」から寸法を作るか、下のボタンで追加します。</p>}
-            {params.map((p, i) => (
-              <ParamCard key={p.id} p={p} color={PALETTE[i % PALETTE.length]} check={checks[p.id]} value={values[p.id]}
-                faces={info?.faces ?? []} kinds={meta?.kinds ?? {}} active={active === p.id}
-                pickMode={active === p.id ? pickMode : null}
-                onSelect={() => { if (active !== p.id) { setActive(p.id); setPickMode(null) } }}
-                onChange={updateParam}
-                onValue={v => setValues(vs => { const n = { ...vs }; if (v === undefined || isNaN(v)) delete n[p.id]; else n[p.id] = v; return n })}
-                onPick={m => { setActive(p.id); setPickMode(m) }}
-                onDelete={() => { setParams(ps => ps.filter(q => q.id !== p.id)); setValues(vs => { const n = { ...vs }; delete n[p.id]; return n }); if (active === p.id) setActive(null) }}
-              />
-            ))}
-            <div className="sl-btns">
-              <button className="sl-btn" onClick={() => addParam('distance', null)}>＋ 寸法（距離）</button>
-              <button className="sl-btn" onClick={() => addParam('diameter', null)}>＋ 直径</button>
-              <button className="sl-btn" onClick={() => addParam('offset', null)}>＋ 面の移動</button>
-            </div>
-            {Object.keys(values).length > 0 && <button className="sl-link" onClick={() => setValues({})}>すべて元の寸法に戻す</button>}
-          </section>
-        )}
-      </aside>
-
-      <main className="sl-center">
-        <Viewer mesh={mesh} ghost={ghost && morph ? baseMesh : null} faceColors={faceColors} hoverFace={hover}
-          fitKey={model} onPick={onPick} onHover={setHover} />
-        {!model && !loading && (
-          <div className="sl-empty">
-            <h1>形状パラメータ・ラボ</h1>
-            <p>CAD（STEP / IGES）を読み込み、面を選んで <b>寸法をパラメータ化</b> → スライダーで形を変えて確認 →
-              実験計画（LHS など）で <b>サロゲート学習用の形状を一括生成</b> します。</p>
-            <div className="sl-btns">
-              <button className="sl-btn sl-primary" onClick={demo}>デモ形状で試す</button>
-              <button className="sl-btn" onClick={() => fileRef.current?.click()}>CAD を開く</button>
-            </div>
-          </div>
-        )}
-        {model && (
-          <div className="sl-hud">
-            <div className="sl-hud-row">
-              <b>{model}</b>
-              {info && <span>面 {info.faces.length} 枚</span>}
-              {info && <span>体積 {fmt((morph?.mass.volume ?? info.mass.volume) / 1000, 1)} cm³
-                {dv != null && Math.abs(dv) > 1e-6 && <b className={dv > 0 ? 'sl-up' : 'sl-down'}> （{dv > 0 ? '+' : ''}{fmt(dv, 2)}%）</b>}</span>}
-              {morph && <span className={`sl-badge ${morph.method}`} title={morph.method === 'boolean'
-                ? '面オフセットで作れなかったため、押し出し・削り（ブーリアン）で作りました。隣の面は動かす面の法線方向にまっすぐ延びます（抜き勾配は保たれません）。'
-                : '隣の面が自然に伸び縮みする方式で作りました。'}>{METHOD_LABEL[morph.method]}</span>}
-              {morph && <span className="sl-sub">{fmt(morph.seconds, 2)} 秒</span>}
-              {computing && <span className="sl-spin">計算中…</span>}
-            </div>
-            <div className="sl-hud-row">
-              <label className="sl-mini"><input type="checkbox" checked={ghost} onChange={e => setGhost(e.target.checked)} />元の形を赤線で重ねる</label>
-              <label className="sl-mini">方式
-                <select value={method} onChange={e => setMethod(e.target.value)}>
-                  <option value="auto">自動（精密→だめなら近似）</option>
-                  <option value="offset">精密のみ</option>
-                  <option value="boolean">近似のみ</option>
-                </select>
-              </label>
-            </div>
-            {pickMode && <div className="sl-pick">🖱 {pickMode === 'faces' ? '動かす面' : '基準面'}をクリックしてください（もう一度クリックで解除）
-              <button className="sl-link" onClick={() => setPickMode(null)}>終了</button></div>}
-            {morphErr && <div className="sl-err">⚠ {morphErr}</div>}
-          </div>
-        )}
-        {hoverInfo && <div className="sl-tip">{hoverInfo.label}</div>}
-        {(loading || msg) && <div className="sl-toast">{loading || msg}</div>}
-      </main>
-
-      <aside className="sl-right">
-        {model && (
-          <section>
-            <h2>選択中の面</h2>
-            {!face && <p className="sl-hint">3D の面をクリックすると、種類・寸法が表示されます。</p>}
-            {face && (
-              <div className="sl-face">
-                <div><b>{face.label}</b></div>
-                <div className="sl-sub">面積 {fmt(face.area, 1)} mm² ／ 中心 ({face.center.map(v => fmt(v, 1)).join(', ')})</div>
-                {face.kind_code === 0 && <div className="sl-sub">法線 ({face.normal.map(v => fmt(v, 3)).join(', ')})</div>}
-                {face.axis_dir && <div className="sl-sub">軸 ({face.axis_dir.map(v => fmt(v, 3)).join(', ')})</div>}
-                <div className="sl-btns">
-                  {face.kind_code === 0 && <button className="sl-btn sl-btn-s" onClick={() => addParam('distance', face.id)}>この面の寸法（距離）を作る</button>}
-                  {face.kind_code === 1 && <button className="sl-btn sl-btn-s" onClick={() => addParam('diameter', face.id)}>この円筒の直径を作る</button>}
-                  <button className="sl-btn sl-btn-s" onClick={() => addParam('offset', face.id)}>この面の移動量を作る</button>
-                </div>
+          {model && (
+            <div className="sl-hud">
+              <div className="sl-hud-row">
+                <b>{model}</b>
+                {info && <span>体積 {fmt((morph?.mass.volume ?? info.mass.volume) / 1000, 1)} cm³
+                  {dv != null && Math.abs(dv) > 1e-6 && <b className={dv > 0 ? 'sl-up' : 'sl-down'}> （{dv > 0 ? '+' : ''}{fmt(dv, 2)}%）</b>}</span>}
+                {computing && <span className="sl-spin">計算中…</span>}
+                {morph && Object.keys(values).length > 0 && <button className="sl-link" onClick={() => setValues({})}>すべて元の形に戻す</button>}
               </div>
-            )}
-          </section>
-        )}
-        {model && meta && (
-          <section>
+              {step === 2 && !popup && !pickMode && (
+                <div className="sl-guide">👆 変えたい面をクリック{params.length > 0 && '　／　矢印の先の ● をドラッグすると形が変わります'}</div>
+              )}
+              {pickMode && <div className="sl-pick">🖱 {pickMode === 'faces' ? '一緒に動かす面' : '測る基準の面'}をクリックしてください
+                <button className="sl-link" onClick={() => setPickMode(null)}>終わる</button></div>}
+              {morphErr && <div className="sl-err">⚠ この形は作れません: {morphErr}</div>}
+            </div>
+          )}
+          {suggestions && popup && (
+            <FacePopup s={suggestions} at={popup.at} box={box} onChoose={addParam}
+              onEdit={id => { setActive(id); setPopup(null) }} onClose={() => setPopup(null)} />
+          )}
+          {hoverInfo && !popup && <div className="sl-tip">{hoverInfo.label}</div>}
+          {model && (
+            <label className="sl-ghost sl-mini"><input type="checkbox" checked={ghost} onChange={e => setGhost(e.target.checked)} />元の形を赤い線で重ねる</label>
+          )}
+          {(loading || msg) && <div className="sl-toast">{loading || msg}</div>}
+        </main>
+
+        <aside className="sl-panel">
+          {step === 1 && (
+            <LoadStep models={models} projects={projects} model={model} info={info} busy={!!loading}
+              onUpload={upload} onOpen={async n => { if (await openModel(n)) setStep(2) }} onProject={loadProject} onDemo={demo}
+              seg={seg} onResegment={resegment} onNext={() => setStep(2)} />
+          )}
+          {step === 2 && model && (
+            <div className="sl-stepbody">
+              <h2>② 変えたい所を選びます</h2>
+              <p className="sl-hint">3D の形の中で、<b>変えたい面をクリック</b>してください（穴・ボス・上面・リブの側面など）。
+                出てくる候補から選ぶと寸法ができます。</p>
+              {params.length === 0 && <div className="sl-emptybox">まだ寸法がありません。左の 3D の面をクリックしてみてください。</div>}
+              {params.map((p, i) => (
+                <ParamCard key={p.id} p={p} color={PALETTE[i % PALETTE.length]} check={checks[p.id]} value={values[p.id]}
+                  faces={info?.faces ?? []} kinds={meta?.kinds ?? {}} active={active === p.id}
+                  pickMode={active === p.id ? pickMode : null}
+                  onSelect={() => { if (active !== p.id) { setActive(p.id); setPickMode(null) } }}
+                  onChange={updateParam} onValue={v => setValue(p.id, v)}
+                  onPick={m => { setActive(p.id); setPickMode(m) }} onDelete={() => removeParam(p.id)} />
+              ))}
+              {params.length > 0 && (
+                <button className="sl-btn sl-primary sl-next" disabled={hasErrors} onClick={() => setStep(3)}>次へ: 範囲を決める →</button>
+              )}
+              {!isMesh && model && (
+                <div className="sl-adv">
+                  <button className="sl-link" onClick={() => setAdv(!adv)}>{adv ? '▾' : '▸'} 形の作り方（詳細）</button>
+                  {adv && (
+                    <>
+                      <div className="sl-row">
+                        <label>方式</label>
+                        <select value={method} onChange={e => setMethod(e.target.value)}>
+                          <option value="auto">自動（精密 → だめなら近似）</option>
+                          <option value="offset">精密のみ</option>
+                          <option value="boolean">近似のみ</option>
+                        </select>
+                      </div>
+                      {morph && <p className="sl-hint">今の形: {METHOD_LABEL[morph.method]}（{fmt(morph.seconds, 2)} 秒）</p>}
+                    </>
+                  )}
+                </div>
+              )}
+              {isMesh && morph?.quality?.min_volume_ratio != null && (
+                <p className="sl-hint">要素のつぶれ具合: いちばん小さい体積比 {fmt(morph.quality.min_volume_ratio, 2)}
+                  （1 が元のまま。0 に近いほどつぶれている）{!morph.full && '　※大きなメッシュのため、操作中は表面だけ動かしています'}</p>
+              )}
+            </div>
+          )}
+          {step === 3 && model && (
+            <RangeStep api={api} model={model} seg={seg} morphMethod={method} params={params} checks={checks}
+              doe={doe} onDoe={setDoe} onChange={updateParam} onNext={() => setStep(4)} />
+          )}
+          {step === 4 && model && meta && (
             <DoePanel api={api} model={model} params={params} doe={doe} methods={meta.doe_methods} morphMethod={method}
+              seg={seg} formatsAvail={info?.formats ?? ['stl']}
               hasErrors={hasErrors} onDoe={setDoe} project={project}
               onPreview={v => setValues(Object.fromEntries(Object.entries(v)))} />
-          </section>
-        )}
-        {meta && <p className="sl-foot">データ保存先: <code>{meta.data_dir}</code></p>}
-      </aside>
+          )}
+          {meta && <p className="sl-foot">保存先: <code>{meta.data_dir}</code></p>}
+        </aside>
+      </div>
     </div>
   )
 }

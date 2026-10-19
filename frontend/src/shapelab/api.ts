@@ -1,5 +1,5 @@
 // shape-param-lab の API クライアント。埋め込み先では base（例: '/api/shape'）を変えて使う。
-import type { CheckResult, DoeSettings, FaceInfo, GenRow, Job, MeshData, ModelInfo, Param, Project, RangeResult } from './types'
+import type { CheckResult, DoeSettings, FaceInfo, GenRow, Job, MeshData, ModelInfo, Param, Project, Quality, RangeResult } from './types'
 
 export class ShapeApi {
   constructor(public base = '/api/shape') {}
@@ -20,23 +20,27 @@ export class ShapeApi {
 
   meta() { return this.req<{ kinds: Record<string, string>; doe_methods: Record<string, string>; suffixes: string[]; data_dir: string }>('/meta') }
   models() { return this.req<{ name: string; size: number }[]>('/models') }
-  demo() { return this.post<{ name: string; project: string; data: Project }>('/models/demo', {}) }
+  demo(kind: 'step' | 'stl' | 'fillet' = 'step') { return this.post<{ name: string; project: string; data: Project }>(`/models/demo?kind=${kind}`, {}) }
   async upload(file: File) {
     const fd = new FormData()
     fd.append('file', file)
     return this.req<{ name: string }>('/models/upload', { method: 'POST', body: fd })
   }
-  info(name: string) { return this.req<ModelInfo>(`/models/${encodeURIComponent(name)}/info`) }
-  baseMesh(name: string) { return this.packed<{ faces: number }>(`/models/${encodeURIComponent(name)}/mesh`) }
-  check(model: string, params: Param[]) { return this.post<CheckResult[]>('/check', { model, params }) }
-  morph(model: string, params: Param[], values: Record<string, number>, method: string, signal?: AbortSignal) {
+  info(name: string, seg = 30) { return this.req<ModelInfo>(`/models/${encodeURIComponent(name)}/info?seg_angle=${seg}`) }
+  baseMesh(name: string, seg = 30) { return this.packed<{ faces: number }>(`/models/${encodeURIComponent(name)}/mesh?seg_angle=${seg}`) }
+  check(model: string, params: Param[], seg = 30) { return this.post<CheckResult[]>('/check', { model, params, seg_angle: seg }) }
+  morph(model: string, params: Param[], values: Record<string, number>, method: string, seg = 30, signal?: AbortSignal) {
     return this.packed<MorphInfo>('/morph', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-      body: JSON.stringify({ model, params, values, method }),
+      body: JSON.stringify({ model, params, values, method, seg_angle: seg }),
     })
   }
-  rangeCheck(model: string, params: Param[], method: string) { return this.post<RangeResult[]>('/range-check', { model, params, method }) }
-  doe(model: string, params: Param[], d: DoeSettings) { return this.post<Record<string, number>[]>('/doe', { model, params, ...d }) }
+  rangeCheck(model: string, params: Param[], method: string, seg = 30, constraints: string[] = []) {
+    return this.post<RangeResult[]>('/range-check', { model, params, method, seg_angle: seg, constraints })
+  }
+  doe(model: string, params: Param[], d: DoeSettings, seg = 30) {
+    return this.post<Record<string, number>[]>('/doe', { model, params, ...d, seg_angle: seg })
+  }
   projects() { return this.req<{ name: string }[]>('/projects') }
   project(name: string) { return this.req<Project>(`/projects/${encodeURIComponent(name)}`) }
   saveProject(name: string, project: Project) { return this.post<{ name: string }>('/projects', { name, project }) }
@@ -50,9 +54,11 @@ export class ShapeApi {
 }
 
 export interface MorphInfo {
-  method: 'none' | 'offset' | 'boolean'
+  method: 'none' | 'offset' | 'boolean' | 'morph'
   offsets: Record<string, number>
   mass: ModelInfo['mass']
+  quality: Quality
+  full: boolean
   seconds: number
 }
 

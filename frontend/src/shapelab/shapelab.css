@@ -2,7 +2,7 @@
 .sl-root {
   --sl-bg: #f4f6f9; --sl-panel: #ffffff; --sl-line: #dfe4ea; --sl-text: #1f2933; --sl-sub: #66727f;
   --sl-accent: #2f7de1; --sl-up: #c2410c; --sl-down: #1c7c54; --sl-err: #c92a2a; --sl-hover: #f0f5fc;
-  display: grid; grid-template-columns: 340px 1fr 360px; height: 100%; min-height: 0;
+  display: grid; grid-template-rows: auto 1fr; height: 100%; min-height: 0;
   background: var(--sl-bg); color: var(--sl-text);
   font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
 }
@@ -63,6 +63,7 @@
 .sl-slider { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .sl-slider input[type=range] { flex: 1; min-width: 60px; }
 .sl-num { width: 72px; text-align: right; }
+.sl-num-s { width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: var(--sl-sub); }
 .sl-detail { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--sl-line); }
 .sl-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
 .sl-chip { display: inline-flex; align-items: center; gap: 2px; border: 1px solid; border-radius: 12px; padding: 1px 2px 1px 8px; font-size: 11px; background: #fafbfc; }
@@ -76,6 +77,7 @@
 .sl-hud-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: #ffffffe6; border: 1px solid var(--sl-line); border-radius: 8px; padding: 4px 10px; }
 .sl-badge { font-size: 11px; border-radius: 10px; padding: 1px 8px; background: #e7f5ee; color: #1c7c54; cursor: help; }
 .sl-badge.boolean { background: #fff4e0; color: #a35a00; }
+.sl-badge.morph { background: #e8f0fe; color: #1f5bb5; }
 .sl-badge.none { background: #eef1f5; color: var(--sl-sub); }
 .sl-spin { color: var(--sl-accent); font-size: 12px; }
 .sl-pick { background: #fff4d6; border: 1px solid #e0b400; border-radius: 8px; padding: 4px 10px; font-size: 12px; }
@@ -103,6 +105,8 @@
 .sl-range-list li { padding: 2px 0; }
 .sl-range-list li.ok { color: #1c7c54; }
 .sl-range-list li.ng { color: var(--sl-err); }
+.sl-range-list li.skip { color: var(--sl-sub); }
+.sl-cons { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid var(--sl-line); border-radius: 6px; padding: 4px 6px; resize: vertical; width: 100%; }
 .sl-job { margin: 6px 0; }
 .sl-bar { height: 8px; border-radius: 4px; background: #eef1f5; overflow: hidden; }
 .sl-bar > div { height: 100%; background: var(--sl-accent); transition: width .3s; }
@@ -111,8 +115,80 @@
 .sl-outputs li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
 .sl-outputs li > span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-@media (max-width: 1100px) {
-  .sl-root { grid-template-columns: 1fr; grid-template-rows: auto 60vh auto; height: auto; }
-  .sl-left, .sl-right { border: 0; }
+
+
+/* ---- 手順バー ---- */
+.sl-top { display: flex; align-items: center; gap: 16px; padding: 8px 14px; background: var(--sl-panel); border-bottom: 1px solid var(--sl-line); flex-wrap: wrap; }
+.sl-brand { font-weight: 700; font-size: 15px; white-space: nowrap; }
+.sl-steps { display: flex; gap: 4px; flex: 1; min-width: 0; flex-wrap: wrap; }
+.sl-step { display: flex; align-items: center; gap: 8px; border: 1px solid var(--sl-line); background: #fff; border-radius: 22px; padding: 4px 14px 4px 4px; cursor: pointer; font: inherit; color: var(--sl-sub); }
+.sl-step:disabled { opacity: .45; cursor: default; }
+.sl-step.on { border-color: var(--sl-accent); color: var(--sl-text); box-shadow: 0 0 0 2px #2f7de122; }
+.sl-step-n { width: 26px; height: 26px; border-radius: 50%; background: #eef1f5; display: grid; place-items: center; font-weight: 700; }
+.sl-step.on .sl-step-n { background: var(--sl-accent); color: #fff; }
+.sl-step.done .sl-step-n { background: #e7f5ee; color: #1c7c54; }
+.sl-step-t { display: flex; flex-direction: column; line-height: 1.2; text-align: left; font-weight: 600; }
+.sl-step-t small { font-weight: 400; font-size: 11px; color: var(--sl-sub); }
+.sl-save { display: flex; gap: 6px; align-items: center; }
+.sl-save input { width: 150px; }
+
+/* ---- 本体（3D ＋ 右の手順パネル） ---- */
+.sl-body { display: grid; grid-template-columns: 1fr 400px; min-height: 0; }
+.sl-panel { background: var(--sl-panel); border-left: 1px solid var(--sl-line); overflow-y: auto; min-height: 0; }
+.sl-stepbody { padding: 14px 16px; }
+.sl-stepbody h2 { font-size: 15px; color: var(--sl-text); margin: 0 0 6px; }
+.sl-stepbody h3 { color: var(--sl-sub); font-weight: 600; }
+.sl-next { display: block; width: 100%; margin: 14px 0 6px; padding: 8px; font-weight: 600; }
+.sl-adv { margin: 10px 0; padding-top: 8px; border-top: 1px dashed var(--sl-line); }
+.sl-emptybox { border: 1px dashed #b9c6d6; border-radius: 8px; padding: 14px; color: var(--sl-sub); text-align: center; margin: 10px 0; }
+.sl-okbox { color: #1c7c54; background: #e7f5ee; border-radius: 6px; padding: 4px 8px; font-size: 12px; margin: 4px 0; }
+.sl-big input { font-size: 16px; width: 90px; }
+.sl-card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 2px; }
+
+/* ① 読み込む */
+.sl-drop { border: 2px dashed #b9c6d6; border-radius: 10px; padding: 22px 12px; text-align: center; cursor: pointer; background: #f9fbfd; margin: 8px 0 12px; }
+.sl-drop:hover, .sl-drop.over { border-color: var(--sl-accent); background: #eef5ff; }
+.sl-drop-icon { font-size: 26px; color: var(--sl-accent); }
+.sl-loaded { border: 1px solid #b9dcc9; background: #f3fbf6; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.sl-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.sl-list-item { display: flex; gap: 8px; align-items: center; text-align: left; font: inherit; border: 1px solid var(--sl-line); background: #fff; border-radius: 6px; padding: 5px 8px; cursor: pointer; }
+.sl-list-item:hover { background: var(--sl-hover); }
+.sl-list-item.on { border-color: var(--sl-accent); }
+
+/* ③ 範囲 */
+.sl-range-card { border: 1px solid var(--sl-line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.sl-rangebar { position: relative; height: 10px; margin: 8px 4px 4px; }
+.sl-rangebar-track { position: absolute; inset: 3px 0; background: #dbe7f7; border-radius: 3px; }
+.sl-rangebar-base { position: absolute; top: -2px; width: 3px; height: 14px; background: var(--sl-text); border-radius: 2px; transform: translateX(-1px); }
+.sl-quick { display: inline-flex; gap: 3px; margin-left: auto; }
+.sl-keys { font-size: 11px; margin-top: 4px; border-collapse: collapse; }
+.sl-keys td { padding: 1px 8px 1px 0; }
+
+/* 3D の上 */
+.sl-guide { background: #ffffffe6; border: 1px solid var(--sl-line); border-radius: 8px; padding: 4px 10px; font-size: 12px; }
+.sl-ghost { position: absolute; left: 10px; bottom: 10px; background: #ffffffe6; border-radius: 6px; padding: 2px 8px; }
+.sl-dimlabels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 2; }
+.sl-dimlabel { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; white-space: nowrap; font-size: 12px; font-weight: 600;
+  background: #fffffff0; border: 2px solid; border-radius: 12px; padding: 1px 8px; box-shadow: 0 1px 3px #0002; }
+.sl-dimlabel.on { font-size: 13px; box-shadow: 0 2px 8px #0003; z-index: 2; }
+.sl-dimlabel:not(.on) { font-size: 11px; padding: 0 6px; }
+
+/* 面をクリックしたときの候補 */
+.sl-pop { position: absolute; z-index: 5; background: #fff; border: 1px solid #b9c6d6; border-radius: 10px; box-shadow: 0 6px 24px #0003; padding: 10px 12px; }
+.sl-pop-head { display: flex; justify-content: space-between; align-items: flex-start; }
+.sl-pop-used { font-size: 12px; background: #fff8e1; border-radius: 6px; padding: 4px 8px; margin: 6px 0; }
+.sl-pop-items { display: flex; flex-direction: column; gap: 6px; }
+.sl-pop-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; font: inherit; border: 1px solid var(--sl-line); background: #fff; border-radius: 8px; padding: 7px 10px; cursor: pointer; }
+.sl-pop-item:hover { border-color: var(--sl-accent); background: #f3f8ff; }
+.sl-pop-item.first { border-color: #9cc2f0; }
+.sl-pop-item.small { padding: 4px 8px; margin-top: 4px; }
+.sl-pop-title { font-weight: 600; }
+.sl-pop-detail { font-size: 12px; color: var(--sl-sub); }
+.sl-pop-more { margin-top: 6px; display: flex; flex-direction: column; }
+
+@media (max-width: 1000px) {
+  .sl-root { height: auto; }
+  .sl-body { grid-template-columns: 1fr; }
   .sl-center { min-height: 60vh; }
+  .sl-panel { border-left: 0; border-top: 1px solid var(--sl-line); }
 }

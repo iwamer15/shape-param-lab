@@ -7,7 +7,7 @@
     app.include_router(make_router(Path("data/shape")), prefix="/api/shape")
 
 data_dir の中身
-    models/    … 元の CAD（STEP / IGES / BREP）
+    models/    … 元の形状（STEP / IGES / BREP / STL / INP）
     projects/  … パラメータ定義（*.json）
     outputs/   … 一括生成した形状（outputs/<名前>/sample_XXX/...）
 """
@@ -25,17 +25,21 @@ import uuid
 import zipfile
 from pathlib import Path
 
+import numpy as np
+
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import cad, demo, doe
 from .generate import LOCK, generate
+from .models import ALL_SUFFIXES, load_model
 from .params import KINDS, base_value, check_params, face_offsets
 
 
 class MorphIn(BaseModel):
     model: str
+    seg_angle: float = 30.0
     params: list[dict] = Field(default_factory=list)
     values: dict[str, float] = Field(default_factory=dict)
     method: str = "auto"
@@ -44,22 +48,27 @@ class MorphIn(BaseModel):
 
 class CheckIn(BaseModel):
     model: str
+    seg_angle: float = 30.0
     params: list[dict] = Field(default_factory=list)
 
 
 class DoeIn(BaseModel):
     model: str
+    seg_angle: float = 30.0
     params: list[dict]
     method: str = "lhs"
     n: int = 20
     seed: int = 0
     levels: int = 3
+    constraints: list[str] = Field(default_factory=list)
 
 
 class RangeIn(BaseModel):
     model: str
+    seg_angle: float = 30.0
     params: list[dict]
     method: str = "auto"
+    constraints: list[str] = Field(default_factory=list)
 
 
 class ProjectIn(BaseModel):
@@ -68,10 +77,9 @@ class ProjectIn(BaseModel):
 
 
 class GenerateIn(BaseModel):
-    project: dict              # {"model", "params", "doe": {...}}
+    project: dict              # {"model", "params", "doe": {...}, "seg_angle"}
     out_name: str
-    formats: list[str] = Field(default_factory=lambda: ["stl", "step"])
-    deflection: float | None = None
+    formats: list[str] = Field(default_factory=lambda: ["stl", "step", "inp"])
     method: str = "auto"
     samples: list[dict[str, float]] | None = None   # 指定が無ければ doe から作る
     overwrite: bool = False
@@ -97,38 +105,46 @@ def make_router(data_dir: Path) -> APIRouter:
         d.mkdir(parents=True, exist_ok=True)
 
     router = APIRouter(tags=["shape-param-lab"])
-    cache: dict[str, tuple[float, object, list]] = {}
+    cache: dict[tuple, tuple[float, object]] = {}
     jobs: dict[str, dict] = {}
 
-    def load(name: str):
+    def load(name: str, seg_angle: float = 30.0):
+        """形状を読み込んでキャッシュ（メッシュは面の分割角度ごと）。"""
         path = models_dir / _safe(name)
         if not path.exists():
             raise HTTPException(404, f"モデルがありません: {name}")
         mt = path.stat().st_mtime
-        hit = cache.get(name)
+        key = (name, round(float(seg_angle), 3) if path.suffix.lower() in (".stl", ".inp") else None)
+        hit = cache.get(key)
         if hit and hit[0] == mt:
-            return hit[1], hit[2]
+            return hit[1]
         with LOCK:
             try:
-                shape = cad.load_shape(path)
+                model = load_model(path, seg_angle)
             except cad.CadError as e:
                 raise HTTPException(400, str(e))
-            infos = cad.all_face_info(shape)
-        cache[name] = (mt, shape, infos)
-        return shape, infos
+        cache[key] = (mt, model)
+        same = [k for k in cache if k[0] == name]
+        for k in same[:-3]:   # 分割角度違いは新しい 3 つまで残す
+            cache.pop(k, None)
+        return model
+
+    def _clear(name):
+        for k in [k for k in cache if k[0] == name]:
+            cache.pop(k, None)
 
     # ---- モデル --------------------------------------------------------------
 
     @router.get("/meta")
     def meta():
-        return {"kinds": KINDS, "doe_methods": doe.METHODS, "suffixes": list(cad.CAD_SUFFIXES),
+        return {"kinds": KINDS, "doe_methods": doe.METHODS, "suffixes": list(ALL_SUFFIXES),
                 "data_dir": str(data_dir.resolve())}
 
     @router.get("/models")
     def list_models():
         out = []
         for p in sorted(models_dir.iterdir()):
-            if p.suffix.lower() in cad.CAD_SUFFIXES:
+            if p.suffix.lower() in ALL_SUFFIXES:
                 st = p.stat()
                 out.append({"name": p.name, "size": st.st_size, "mtime": st.st_mtime})
         return out
@@ -136,14 +152,12 @@ def make_router(data_dir: Path) -> APIRouter:
     @router.post("/models/upload")
     async def upload(file: UploadFile = File(...)):
         name = _safe(file.filename or "model.step")
-        if Path(name).suffix.lower() not in cad.CAD_SUFFIXES:
-            if Path(name).suffix.lower() == ".stl":
-                raise HTTPException(400, "STL は寸法（面・穴径）の情報が無いため使えません。CAD から STEP で書き出してください。")
-            raise HTTPException(400, f"対応形式は {', '.join(cad.CAD_SUFFIXES)} です")
+        if Path(name).suffix.lower() not in ALL_SUFFIXES:
+            raise HTTPException(400, f"対応形式は {', '.join(ALL_SUFFIXES)} です")
         dst = models_dir / name
         with open(dst, "wb") as f:
             shutil.copyfileobj(file.file, f)
-        cache.pop(name, None)
+        _clear(name)
         try:
             load(name)
         except HTTPException:
@@ -152,66 +166,71 @@ def make_router(data_dir: Path) -> APIRouter:
         return {"name": name}
 
     @router.post("/models/demo")
-    def make_demo():
+    def make_demo(kind: str = "step"):
         with LOCK:
-            path = demo.write_demo(models_dir)
-        cache.pop(path.name, None)
-        shape, _ = load(path.name)
-        with LOCK:
-            params = demo.demo_params(shape)
+            path = {"stl": demo.write_demo_stl, "fillet": demo.write_fillet_demo_stl}.get(kind, demo.write_demo)(models_dir)
+        _clear(path.name)
+        model = load(path.name)
+        params = demo.demo_params(model.infos)
+        if kind == "fillet":
+            cone = next((f for f in model.infos if f.kind_code == 2 and f.fillet_r is None and f.radius), None)
+            if cone is not None:
+                params.append({"id": "p8", "key": "draft_d", "name": "抜き勾配ボスの根元径", "kind": "diameter",
+                               "faces": [{"face": cone.id, "coef": 1.0}], "min": 15, "max": 21, "step": 0.5})
         project = {"version": 1, "model": path.name, "params": params,
                    "doe": {"method": "lhs", "n": 20, "seed": 0, "levels": 3}}
-        (projects_dir / "demo.json").write_text(json.dumps(project, ensure_ascii=False, indent=2), "utf-8")
-        return {"name": path.name, "project": "demo", "data": project}
+        pname = {"stl": "demo_stl", "fillet": "demo_fillet"}.get(kind, "demo")
+        if kind in ("stl", "fillet"):
+            project["seg_angle"] = 30.0
+            project["doe"]["constraints"] = ["rib_h <= bossB_h - 3", "rib_h - plate_t >= 8"]
+        (projects_dir / f"{pname}.json").write_text(json.dumps(project, ensure_ascii=False, indent=2), "utf-8")
+        return {"name": path.name, "project": pname, "data": project}
 
     @router.delete("/models/{name}")
     def delete_model(name: str):
         (models_dir / _safe(name)).unlink(missing_ok=True)
-        cache.pop(name, None)
+        _clear(name)
         return {"ok": True}
 
     @router.get("/models/{name}/info")
-    def model_info(name: str):
-        shape, infos = load(name)
-        with LOCK:
-            mp = cad.mass_props(shape)
-            defl = cad.default_deflection(shape)
-        return {"name": name, "faces": [f.to_dict() for f in infos], "mass": mp, "deflection": defl}
+    def model_info(name: str, seg_angle: float = 30.0):
+        m = load(name, seg_angle)
+        return {"name": name, "faces": [f.to_dict() for f in m.infos], "mass": m.mass(), "model": m.describe(),
+                "formats": m.formats, "methods": m.methods}
 
     @router.get("/models/{name}/mesh")
-    def model_mesh(name: str, deflection: float | None = None):
-        shape, infos = load(name)
+    def model_mesh(name: str, seg_angle: float = 30.0):
+        m = load(name, seg_angle)
         with LOCK:
-            mesh = cad.tessellate(shape, deflection)
-        return _pack({"faces": len(infos)}, mesh)
+            mesh = m.base_mesh()
+        return _pack({"faces": len(m.infos)}, mesh)
 
     # ---- パラメータ・変形 ------------------------------------------------------
 
     @router.post("/check")
     def check(body: CheckIn):
-        _, infos = load(body.model)
-        return check_params(body.params, infos)
+        return check_params(body.params, load(body.model, body.seg_angle).infos)
 
     @router.post("/morph")
     def morph(body: MorphIn):
-        shape, infos = load(body.model)
+        m = load(body.model, body.seg_angle)
         t = time.time()
+        # 大きな解析メッシュは、操作中は表面だけ動かす（内部節点・要素の反転確認は生成時に行う）
+        full = not (m.kind == "mesh" and len(m.data.nodes) > 300_000)
         with LOCK:
             try:
-                offs = face_offsets(body.params, body.values, infos)
-                res = cad.apply_offsets(shape, offs, method=body.method)
-                mesh = cad.tessellate(res.shape, body.deflection, face_labels=res.origin)
-                mp = cad.mass_props(res.shape)
+                offs = face_offsets(body.params, body.values, m.infos)
+                res = m.morph(offs, method=body.method, full=full)
             except cad.CadError as e:
                 raise HTTPException(422, str(e))
-        info = {"method": res.method, "offsets": {str(k): v for k, v in offs.items()},
-                "mass": mp, "seconds": round(time.time() - t, 3)}
-        return _pack(info, mesh)
+        info = {"method": res.method, "offsets": {str(k): v for k, v in offs.items()}, "quality": res.quality,
+                "mass": res.mass, "seconds": round(time.time() - t, 3), "full": full}
+        return _pack(info, res.mesh)
 
     @router.post("/range-check")
     def range_check(body: RangeIn):
         """各パラメータを 1 つずつ最小・最大にしたとき＋全部最小・全部最大で形状が作れるか。"""
-        shape, infos = load(body.model)
+        m = load(body.model, body.seg_angle)
         active = [p for p in body.params if p.get("enabled") is not False]
         cases = []
         for p in active:
@@ -221,24 +240,33 @@ def make_router(data_dir: Path) -> APIRouter:
         if len(active) > 1:
             cases.append(("全部 最小", {p["id"]: float(p["min"]) for p in active}))
             cases.append(("全部 最大", {p["id"]: float(p["max"]) for p in active}))
+        try:
+            feasible, ncons = doe.compile_constraints(body.constraints, [p["key"] for p in active])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         out = []
         for label, vals in cases:
+            if ncons:
+                env = {p["key"]: np.array([vals.get(p["id"], base_value(p, m.infos)["base"])]) for p in active}
+                if not feasible(env)[0]:
+                    out.append({"label": label, "values": vals, "ok": True, "skipped": True, "method": "制約外"})
+                    continue
             t = time.time()
             with LOCK:
                 try:
-                    res = cad.apply_offsets(shape, face_offsets(active, vals, infos), method=body.method)
-                    out.append({"label": label, "values": vals, "ok": True, "method": res.method,
-                                "volume": cad.mass_props(res.shape)["volume"], "seconds": round(time.time() - t, 3)})
+                    res = m.morph(face_offsets(active, vals, m.infos), method=body.method, full=True)
+                    out.append({"label": label, "values": vals, "ok": True, "method": res.method, "quality": res.quality,
+                                "volume": res.mass["volume"], "seconds": round(time.time() - t, 3)})
                 except cad.CadError as e:
                     out.append({"label": label, "values": vals, "ok": False, "error": str(e)})
         return out
 
     @router.post("/doe")
     def doe_preview(body: DoeIn):
-        _, infos = load(body.model)
+        infos = load(body.model, body.seg_angle).infos
         bases = {p["id"]: base_value(p, infos)["base"] for p in body.params}
         try:
-            return doe.sample(body.params, body.n, body.method, body.seed, body.levels, bases)
+            return doe.sample(body.params, body.n, body.method, body.seed, body.levels, bases, body.constraints)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -271,7 +299,8 @@ def make_router(data_dir: Path) -> APIRouter:
     @router.post("/generate")
     def start_generate(body: GenerateIn):
         pj = body.project
-        shape, infos = load(pj["model"])
+        model = load(pj["model"], float(pj.get("seg_angle", 30.0)))
+        infos = model.infos
         params = [p for p in pj.get("params", []) if p.get("enabled") is not False]
         errs = [c for c in check_params(params, infos) if c["error"]]
         if errs:
@@ -286,8 +315,11 @@ def make_router(data_dir: Path) -> APIRouter:
         else:
             d = pj.get("doe", {})
             bases = {p["id"]: base_value(p, infos)["base"] for p in params}
-            samples = doe.sample(params, int(d.get("n", 20)), d.get("method", "lhs"), int(d.get("seed", 0)),
-                                 int(d.get("levels", 3)), bases)
+            try:
+                samples = doe.sample(params, int(d.get("n", 20)), d.get("method", "lhs"), int(d.get("seed", 0)),
+                                     int(d.get("levels", 3)), bases, d.get("constraints") or [])
+            except ValueError as e:
+                raise HTTPException(400, str(e))
         jid = uuid.uuid4().hex[:10]
         job = {"id": jid, "out": out.name, "total": len(samples), "done": 0, "ok": 0, "failed": 0,
                "status": "running", "rows": [], "started": time.time(), "cancel": False, "error": None}
@@ -300,7 +332,7 @@ def make_router(data_dir: Path) -> APIRouter:
 
         def run():
             try:
-                generate(shape, params, samples, out, formats=tuple(body.formats), deflection=body.deflection,
+                generate(model, params, samples, out, formats=tuple(body.formats),
                          method=body.method, project={**pj, "samples": samples}, progress=prog,
                          cancel=lambda: job["cancel"])
                 job["status"] = "cancelled" if job["cancel"] else "done"

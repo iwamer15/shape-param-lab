@@ -181,14 +181,21 @@ class FaceInfo:
     axis_loc: list[float] | None = None
     axis_dir: list[float] | None = None
     convex: bool | None = None   # 円筒: True=ボス（外側）, False=穴（内側）
+    semi_angle: float | None = None   # 円錐: 半頂角 [度]（抜き勾配）
+    fillet_r: float | None = None     # トーラス: 管の半径（輪のフィレットの R）
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
         if self.kind_code == 0:
             d["label"] = f"#{self.id} 平面"
+        elif self.radius is not None and self.fillet_r is not None:
+            d["label"] = f"#{self.id} {self.kind} R{self.fillet_r:.3g}（フィレット）"
         elif self.radius is not None:
             what = "" if self.convex is None else ("（外側＝ボス）" if self.convex else "（内側＝穴）")
-            d["label"] = f"#{self.id} {self.kind} φ{2 * self.radius:.3g}{what}"
+            draft = f" 勾配{self.semi_angle:.2g}°" if self.kind_code == 2 and self.semi_angle else ""
+            d["label"] = f"#{self.id} {self.kind} φ{2 * self.radius:.3g}{draft}{what}"
+        elif self.fillet_r is not None:
+            d["label"] = f"#{self.id} {self.kind} R{self.fillet_r:.3g}（輪のフィレット）"
         else:
             d["label"] = f"#{self.id} {self.kind}"
         return d
@@ -216,7 +223,23 @@ def face_info(face, idx: int) -> FaceInfo:
         info.radius = round(ad.Sphere().Radius(), 6)
         info.convex = bool(n.dot(pt - np.array(_vec(ad.Sphere().Location()))) > 0)
     elif code == 2:
-        info.radius = round(ad.Cone().RefRadius(), 6)
+        cone = ad.Cone()
+        ax = cone.Axis()
+        loc = np.array([ax.Location().X(), ax.Location().Y(), ax.Location().Z()])
+        d = np.array([ax.Direction().X(), ax.Direction().Y(), ax.Direction().Z()])
+        rel = pt - loc
+        radial = rel - rel.dot(d) * d
+        # 大径側（ボスの根元・穴の入口）の半径: 面の UV 範囲の両端で測る
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+        rr = []
+        for v in (v0, v1):
+            q = ad.Value((u0 + u1) / 2, v)
+            qq = np.array([q.X(), q.Y(), q.Z()]) - loc
+            rr.append(float(np.linalg.norm(qq - qq.dot(d) * d)))
+        info.radius = round(max(rr), 6)
+        info.axis_loc, info.axis_dir = loc.round(6).tolist(), d.round(6).tolist()
+        info.convex = bool(n.dot(radial) > 0)
+        info.semi_angle = round(abs(math.degrees(cone.SemiAngle())), 4)
     return info
 
 

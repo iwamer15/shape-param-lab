@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import numpy as np
@@ -22,6 +23,7 @@ import numpy as np
 from .cad import CadError, FaceInfo, angle_deg
 
 KINDS = {"distance": "寸法（2面の距離）", "diameter": "直径", "offset": "面の移動量"}
+ROUND = (1, 2, 3)   # 直径を持つ面: 円筒・円錐・球
 
 
 def _moving(p: dict) -> list[tuple[int, float]]:
@@ -46,11 +48,11 @@ def base_value(p: dict, infos: list[FaceInfo]) -> dict:
         return {"base": 0.0, "sign": 1, "error": None}
     if kind == "diameter":
         f = infos[mv[0][0]]
-        if f.kind_code != 1:
-            return {"base": None, "sign": 1, "error": f"直径は円筒面で指定してください（#{f.id} は{f.kind}）"}
-        notcyl = [k for k, _ in mv if infos[k].kind_code != 1]
-        if notcyl:
-            return {"base": None, "sign": 1, "error": f"円筒面以外が含まれています: {notcyl}"}
+        if f.kind_code not in ROUND or f.radius is None:
+            return {"base": None, "sign": 1, "error": f"直径は円筒・円錐・球の面で指定してください（#{f.id} は{f.kind}）"}
+        bad = [k for k, _ in mv if infos[k].kind_code not in ROUND or infos[k].radius is None]
+        if bad:
+            return {"base": None, "sign": 1, "error": f"円筒・円錐・球以外の面が含まれています: {bad}"}
         return {"base": 2 * f.radius, "sign": 1, "error": None}
     if kind == "distance":
         ref = p.get("ref_face")
@@ -90,8 +92,10 @@ def face_offsets(params: list[dict], values: dict[str, float], infos: list[FaceI
         for k, coef in _moving(p):
             if p["kind"] == "diameter":
                 f = infos[k]
-                # ボス（外側）は半径が増える＝外へ、穴（内側）は半径が増える＝肉が減る方向
-                off = (delta / 2) * (1 if f.convex else -1)
+                # ボス（外側）は半径が増える＝外へ、穴（内側）は半径が増える＝肉が減る方向。
+                # 円錐は面に垂直に動かすので、半径の変化 × cos(半頂角)（勾配はそのまま）
+                cosa = math.cos(math.radians(f.semi_angle or 0.0)) if f.kind_code == 2 else 1.0
+                off = (delta / 2) * cosa * (1 if f.convex else -1)
             else:
                 off = delta * b["sign"]
             out[k] = out.get(k, 0.0) + off * coef

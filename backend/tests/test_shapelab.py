@@ -11,6 +11,7 @@ from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 
 from shapelab import cad, demo, doe
 from shapelab.generate import generate
+from shapelab.models import load_model
 from shapelab.params import check_params, face_offsets
 
 B, C = demo._box, demo._cyl
@@ -117,10 +118,13 @@ def test_step_rounding_and_grid():
     assert [r["a"] for r in doe.sample(ps, method="grid", levels=3)] == [8, 12, 16]
 
 
-def test_generate_writes_sample_folders(demo_shape, tmp_path):
-    s, _, params = demo_shape
+def test_generate_writes_sample_folders(tmp_path):
+    step = demo.write_demo(tmp_path / "models")
+    model = load_model(step)
+    params = demo.demo_params(model.infos)
     samples = doe.sample(params, n=3, seed=0)
-    rows = generate(s, params, samples, tmp_path, formats=("stl", "step"))
+    rows = generate(model, params, samples, tmp_path / "out", formats=("stl", "step"))
+    tmp_path = tmp_path / "out"
     assert [r["status"] for r in rows] == ["ok"] * 3
     d = tmp_path / "sample_001"
     assert (d / "geometry.stl").stat().st_size > 84 and (d / "geometry.step").exists()
@@ -133,8 +137,23 @@ def test_generate_writes_sample_folders(demo_shape, tmp_path):
         assert len(list(csv.DictReader(f))) == 3
 
 
-def test_stl_is_rejected(tmp_path):
+def test_cad_loader_rejects_stl(tmp_path):
     p = tmp_path / "x.stl"
     p.write_bytes(b"solid x\nendsolid x\n")
     with pytest.raises(cad.CadError, match="STEP"):
         cad.load_shape(p)
+
+
+def test_constraints_filter_samples():
+    ps = [{"id": "a", "key": "rib_h", "min": 20, "max": 30, "step": 0.5},
+          {"id": "b", "key": "boss_h", "min": 22, "max": 36, "step": 0.5}]
+    for method in ("lhs", "random", "grid"):
+        rows = doe.sample(ps, n=15, method=method, seed=2, levels=5, constraints=["rib_h <= boss_h - 3"])
+        assert rows and all(r["a"] <= r["b"] - 3 for r in rows)
+    assert len(doe.sample(ps, n=15, seed=2, constraints=["rib_h <= boss_h - 3"])) == 15
+    with pytest.raises(ValueError, match="列名"):
+        doe.sample(ps, n=5, constraints=["rib_w <= 3"])
+    with pytest.raises(ValueError, match="使えない"):
+        doe.sample(ps, n=5, constraints=["__import__('os') <= 3"])
+    with pytest.raises(ValueError, match="満たす組み合わせがありません"):
+        doe.sample(ps, n=5, constraints=["rib_h >= boss_h + 20"])
